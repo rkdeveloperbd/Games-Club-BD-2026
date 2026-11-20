@@ -770,6 +770,15 @@
 
         <section id="add-money-view" class="app-section">
             <div class="back-nav" onclick="window.navigateSub('wallet')"><i class="fas fa-arrow-left"></i> Add Money</div>
+
+            <div id="goriberpay-box" style="background:white; margin:15px; padding:20px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                <div style="font-weight:bold; font-size:16px; margin-bottom:5px;"><i class="fas fa-bolt" style="color:var(--primary)"></i> Instant Add Money (Goriber Pay)</div>
+                <div style="color:#666; font-size:12px; margin-bottom:12px;">bKash / Nagad / Rocket দিয়ে অটোমেটিক পেমেন্ট করুন। ব্যালেন্স সাথে সাথে যোগ হবে।</div>
+                <input type="number" id="goriberpay-amount" class="input-field" placeholder="Amount (BDT)" min="1" step="any" inputmode="decimal">
+                <button id="goriberpay-btn" class="btn-verify bkash" style="margin-top:10px;" onclick="window.goriberPayNow()">PAY NOW</button>
+                <div id="goriberpay-status" style="margin-top:10px; font-size:13px; color:#666;"></div>
+            </div>
+            <div style="text-align:center; color:#999; font-size:12px; margin:5px 0;">— অথবা ম্যানুয়ালি ট্রানজেকশন আইডি দিন —</div>
             
             <div class="pay-method-tabs" style="display:flex; gap:10px; padding:15px; background:white; justify-content:center;">
                 <div class="pay-tab active" data-target="bkash" onclick="window.switchPayTab('bkash')" style="border:1px solid #eee; padding:5px 20px; border-radius:5px; cursor:pointer;">
@@ -1065,7 +1074,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, push, update, get, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+        import { getDatabase, ref, set, onValue, push, update, get, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
         const firebaseConfig = {
@@ -1096,6 +1105,7 @@
 
         // --- GLOBAL EXPORTS ---
         window.verifyAutoPay = verifyAutoPay;
+        window.goriberPayNow = goriberPayNow;
         window.emailLogin = emailLogin;
         window.emailRegister = emailRegister;
         window.handleLogout = handleLogout;
@@ -1579,6 +1589,170 @@
             }
         }
 
+        /* --- GORIBER PAY --- */
+        // Requests go through a same-origin Netlify Function because the gateway
+        // does not allow direct browser (CORS) calls. Auth is BRAND-KEY only.
+        const GORIBERPAY_DEFAULT_BRAND_KEY = "OzMPezoTynnfFsgjAwPiq6iCYX4vFwNVBp024f62QvZPvmuBFz";
+        const GORIBERPAY_ENDPOINT = "/api/goriberpay/";
+        let goriberBrandKey = GORIBERPAY_DEFAULT_BRAND_KEY;
+        let goriberVerifyStarted = false;
+
+        // Live-updated so a change in Admin Settings applies immediately to everyone.
+        onValue(ref(db, 'settings/goriberpay/brandKey'), s => {
+            goriberBrandKey = s.val() || GORIBERPAY_DEFAULT_BRAND_KEY;
+        });
+
+        async function getBrandKey() {
+            try {
+                const s = await get(ref(db, 'settings/goriberpay/brandKey'));
+                if (s.exists() && s.val()) goriberBrandKey = s.val();
+            } catch (e) { /* fall back to last known value */ }
+            return goriberBrandKey;
+        }
+
+        async function goriberRequest(action, payload) {
+            const brandKey = await getBrandKey();
+            const res = await fetch(GORIBERPAY_ENDPOINT + action, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'BRAND-KEY': brandKey },
+                body: JSON.stringify(payload)
+            });
+            let data = null;
+            try { data = await res.json(); } catch (e) { throw new Error('Invalid response from payment gateway'); }
+            return data;
+        }
+
+        function pageBaseUrl() {
+            return window.location.origin + window.location.pathname;
+        }
+
+        function setGoriberStatus(msg, color) {
+            const el = document.getElementById('goriberpay-status');
+            if (el) { el.innerText = msg || ''; el.style.color = color || '#666'; }
+        }
+
+        async function goriberPayNow() {
+            if (!currentUser) return window.showAuthPage('login');
+            const raw = document.getElementById('goriberpay-amount').value.trim();
+            const num = parseFloat(raw);
+            if (!raw || isNaN(num) || num <= 0) return alert('Please enter a valid amount');
+            const amount = String(num); // drops trailing zeroes, e.g. "100.50" -> "100.5"
+
+            const btn = document.getElementById('goriberpay-btn');
+            btn.disabled = true;
+            setGoriberStatus('Creating payment...');
+            try {
+                const base = pageBaseUrl();
+                const data = await goriberRequest('create', {
+                    cus_name: currentUser.displayName || (currentUser.email ? currentUser.email.split('@')[0] : 'User'),
+                    cus_email: currentUser.email || '',
+                    amount: amount,
+                    success_url: base + '?payment=return',
+                    cancel_url: base + '?payment=cancel',
+                    meta_data: { user_id: currentUser.uid }
+                });
+                if (data && (data.status === true || data.status === 'true' || data.status === 1) && data.payment_url) {
+                    setGoriberStatus('Redirecting to payment page...', 'green');
+                    window.location.href = data.payment_url;
+                    return;
+                }
+                throw new Error((data && data.message) || 'Could not create payment');
+            } catch (e) {
+                setGoriberStatus(e.message, '#D32F2F');
+                alert('Payment failed: ' + e.message);
+            }
+            btn.disabled = false;
+        }
+
+        function cleanPaymentParams() {
+            const url = new URL(window.location.href);
+            ['payment', 'transactionId', 'transaction_id', 'paymentMethod', 'paymentAmount', 'paymentFee', 'status'].forEach(k => url.searchParams.delete(k));
+            const qs = url.searchParams.toString();
+            window.history.replaceState({}, document.title, url.pathname + (qs ? '?' + qs : '') + url.hash);
+        }
+
+        async function handleGoriberReturn(user) {
+            const params = new URLSearchParams(window.location.search);
+            const trxId = (params.get('transactionId') || params.get('transaction_id') || '').trim();
+            const payment = params.get('payment');
+
+            if (!trxId) {
+                if (payment === 'cancel') { cleanPaymentParams(); alert('Payment cancelled.'); }
+                return;
+            }
+            if (goriberVerifyStarted) return;
+            goriberVerifyStarted = true;
+
+            window.navigateSub('add-money');
+            setGoriberStatus('Verifying payment...');
+            try {
+                // Already credited? Don't credit twice.
+                const existing = await get(ref(db, 'transactions/' + trxId));
+                if (existing.exists()) {
+                    cleanPaymentParams();
+                    setGoriberStatus('This payment was already added to your wallet.', 'green');
+                    alert('This payment has already been credited.');
+                    return window.navigateSub('wallet');
+                }
+
+                const data = await goriberRequest('verify', { transaction_id: trxId });
+                const status = String((data && data.status) || '').toUpperCase();
+                if (status !== 'COMPLETED') {
+                    cleanPaymentParams();
+                    setGoriberStatus('Payment not completed (' + (status || 'unknown') + ').', '#D32F2F');
+                    return alert('Payment not completed. Status: ' + (status || 'unknown'));
+                }
+
+                const amount = parseFloat(data.amount);
+                if (isNaN(amount) || amount <= 0) throw new Error('Invalid verified amount');
+
+                const meta = data.metadata || data.meta_data || {};
+                if (meta.user_id && meta.user_id !== user.uid) throw new Error('This payment belongs to another account');
+
+                // Atomically claim the transaction id so it can only be credited once.
+                const claim = await runTransaction(ref(db, 'transactions/' + trxId), cur => {
+                    if (cur !== null) return; // abort: already recorded
+                    return {
+                        user_id: user.uid,
+                        amount: amount,
+                        method: data.payment_method || 'Goriber Pay',
+                        gateway: 'Goriber Pay',
+                        status: 'COMPLETED',
+                        credited: true,
+                        time: Date.now(),
+                        date: new Date().toLocaleString()
+                    };
+                });
+                if (!claim.committed) {
+                    cleanPaymentParams();
+                    alert('This payment has already been credited.');
+                    return window.navigateSub('wallet');
+                }
+
+                await runTransaction(ref(db, 'users/' + user.uid + '/deposit'), cur => (parseFloat(cur) || 0) + amount);
+
+                // Also show it in the user's own transaction history.
+                const txKey = push(ref(db, 'transactions/' + user.uid)).key;
+                await set(ref(db, 'transactions/' + user.uid + '/' + txKey), {
+                    type: 'Deposit (Goriber Pay)',
+                    amount: amount,
+                    method: data.payment_method || 'Goriber Pay',
+                    status: 'Success',
+                    txID: trxId,
+                    date: new Date().toLocaleString()
+                });
+
+                cleanPaymentParams();
+                setGoriberStatus('', '');
+                alert(`Successfully added ${amount} TK to your wallet!`);
+                window.navigateSub('wallet');
+            } catch (e) {
+                goriberVerifyStarted = false;
+                setGoriberStatus('Verification failed: ' + e.message, '#D32F2F');
+                alert('Payment verification failed: ' + e.message);
+            }
+        }
+
         function startTimers() {
             setInterval(() => {
                 document.querySelectorAll('.match-countdown').forEach(e => {
@@ -1598,6 +1772,7 @@
         onAuthStateChanged(auth, u => {
             if(u) {
                 currentUser = u;
+                handleGoriberReturn(u);
                 document.getElementById('profile-name').innerText = u.displayName || 'User';
                 document.getElementById('profile-email').innerText = u.email;
                 if(u.photoURL) document.getElementById('profile-avatar').src = u.photoURL;
@@ -1618,6 +1793,10 @@
                 });
             } else {
                 currentUser = null;
+                if (new URLSearchParams(window.location.search).get('transactionId')) {
+                    alert('Please log in to complete your payment verification.');
+                    window.showAuthPage('login');
+                }
                 document.getElementById('profile-name').innerText = "Guest";
                 document.getElementById('profile-login-btn').classList.remove('hidden');
                 document.getElementById('profile-logout-btn').classList.add('hidden');
