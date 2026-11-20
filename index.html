@@ -1656,7 +1656,8 @@
                     window.location.href = data.payment_url;
                     return;
                 }
-                throw new Error((data && data.message) || 'Could not create payment');
+                console.error('Goriber Pay create response:', data);
+                throw new Error((data && data.message ? data.message : 'Could not create payment') + (data && data.status !== undefined ? ' (status: ' + data.status + ')' : ''));
             } catch (e) {
                 setGoriberStatus(e.message, '#D32F2F');
                 alert('Payment failed: ' + e.message);

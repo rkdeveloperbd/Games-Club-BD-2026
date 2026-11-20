@@ -1,7 +1,7 @@
 // Lightweight proxy for the Goriber Pay API.
 // Browsers can't call pay.goriberpay.cyou directly (no CORS headers), so the
-// page posts here and the request is forwarded as-is. Only Content-Type and
-// BRAND-KEY are forwarded; no API-KEY or SECRET-KEY is ever used.
+// page posts here and the request is forwarded. The Brand Key is sent as both
+// BRAND-KEY and API-KEY because the gateway only accepts it that way.
 const UPSTREAM = "https://pay.goriberpay.cyou/api/payment/";
 const ALLOWED_ACTIONS = new Set(["create", "verify"]);
 
@@ -24,7 +24,8 @@ export default async (req, context) => {
   try {
     const upstream = await fetch(UPSTREAM + action, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "BRAND-KEY": brandKey },
+      // The gateway only accepts the Brand Key when it is also sent as API-KEY.
+      headers: { "Content-Type": "application/json", "BRAND-KEY": brandKey, "API-KEY": brandKey },
       body,
     });
     const text = await upstream.text();
