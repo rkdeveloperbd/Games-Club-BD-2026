@@ -433,6 +433,14 @@
                         <button class="btn btn-dark w-100" onclick="savePaymentSettings()">Update Payment Info</button>
                     </div>
                      <div class="card-box">
+                        <h6 class="mb-3 text-primary"><i class="fas fa-credit-card"></i> Goriber Pay</h6>
+                        <div class="mb-3">
+                            <label class="form-label small text-muted">Brand Key</label>
+                            <input type="text" id="set-goriberpay-brandkey" class="form-control" autocomplete="off">
+                        </div>
+                        <button class="btn btn-dark w-100" onclick="saveGoriberPay()">Save / Update</button>
+                    </div>
+                     <div class="card-box">
                         <h6 class="mb-3 text-primary"><i class="fas fa-headset"></i> Support</h6>
                         <div class="mb-3">
                             <label class="form-label small text-muted">Telegram/Support URL</label>
@@ -1206,6 +1214,16 @@
             nagad_number: document.getElementById('set-nagad').value,
             rocket_number: document.getElementById('set-rocket').value
         }).then(()=>alert("Saved"));
+
+        const GORIBERPAY_DEFAULT_BRAND_KEY = "OzMPezoTynnfFsgjAwPiq6iCYX4vFwNVBp024f62QvZPvmuBFz";
+        onValue(ref(db, 'settings/goriberpay/brandKey'), s => {
+            document.getElementById('set-goriberpay-brandkey').value = s.val() || GORIBERPAY_DEFAULT_BRAND_KEY;
+        });
+        window.saveGoriberPay = () => {
+            const key = document.getElementById('set-goriberpay-brandkey').value.trim();
+            if(!key) return alert("Brand Key required");
+            set(ref(db, 'settings/goriberpay/brandKey'), key).then(()=>alert("Goriber Pay Brand Key Saved")).catch(e=>alert(e.message));
+        };
 
         window.saveNotice = () => update(ref(db, 'app_settings'), {notice:document.getElementById('set-notice').value}).then(()=>alert("Saved"));
 
